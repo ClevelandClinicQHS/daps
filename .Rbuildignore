@@ -1,0 +1,10 @@
+^LICENSE\.md$
+^.*\.Rproj$
+^\.Rproj\.user$
+^data$
+^data\_raw$
+^figures$
+^manuscript$
+^\.RData$
+^\.Rhistory$
+^progs$

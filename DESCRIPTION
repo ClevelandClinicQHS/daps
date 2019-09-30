@@ -1,0 +1,24 @@
+Package: daps
+Title: Enables the Creation of Dynamically Adaptive
+    Probabilistic Systems
+Version: 0.0.0.9000
+Authors@R: 
+    person(given = "Nik",
+           family = "Krieger",
+           role = c("aut", "cre"),
+           email = "nk@case.edu")
+Description: Enables the creation of dynamically adaptive
+    probabilistic systems for modeling state transitions.
+License: MIT + file LICENSE
+Imports: 
+    dplyr (>= 0.8.0.1),
+    magrittr (>= 1.5),
+    purrr (>= 0.3.2),
+    rlang (>= 0.3.4),
+    tidyr (>= 1.0.0)
+Suggests: 
+    testthat (>= 2.1.1)
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 6.1.1
+Roxygen: list(markdown = TRUE)
