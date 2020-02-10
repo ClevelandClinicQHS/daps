@@ -40,8 +40,8 @@ add_models <- function(daps, ..., daps_model_table = NULL) {
     
     if (is.null(daps_model_table)) {
       
-      enquos(...) %>%
-        purrr::map_dfr(parse_model) %>% 
+      enquos(..., .unquote_names = FALSE) %>%
+        purrr::map_dfr(parse_model_spec) %>% 
         structure(class = c("daps_model_table", class(.)))
       
     } else {
@@ -59,102 +59,150 @@ add_models <- function(daps, ..., daps_model_table = NULL) {
 
 
 
-parse_model <- function(quo) {
+parse_model_spec <- function(quo) {
   
-  if (!quo_is_call(quo)) {
+  expr <- quo_get_expr(quo)
+  
+  if (!is_call(expr) ||
+      !identical(expr[[1L]], quote(`:=`)) ||
+      !identical(call_args_names(expr), c("", ""))) {
     stop(
-      "The model:\n",
+      "The model:\n\n",
       as_label(quo),
-      "\nmust be either a formula or a call to a modeling function."
+      "\n\nmust be of the form:\n\n",
+      "dynamic_var(t) := {model expression}",
+      "\n\nor:\n\n",
+      "static_var := {model expression}"
     )
   }
   
-  if (is_formula(quo_get_expr(quo))) {
-    model_row_from_formula(quo)
+  lhs <- expr[[2L]]
+  rhs <- expr[[3L]]
+  
+  if (is_call(lhs)) {
+    
+    var <- lhs[[1L]]
+    
+    if (!is_symbol(var) ||
+        !identical(call_args_names(lhs), "") ||
+        !is_symbol(lhs[[2L]], "t")) {
+      stop("dynamic variables must be of the form:\n\nvarname(t)")
+    }
+    
+    dynamic <- TRUE
+    
+  } else if (is_symbol(lhs)) {
+    
+    var <- lhs
+    dynamic <- FALSE
+    
   } else {
-    model_row_from_call(quo)
+    stop(
+      "The lefthand side of the model equation:\n\n",
+      as_label(quo),
+      "\n\nmust be of the form:\n\n",
+      "single_static_variable_name",
+      "\n\nor:\n\n",
+      "dynamic_variable_name(t)"
+    )
+  }
+  
+  if (is_call(rhs) && call_name(rhs) == "list") {
+    
+    model_exprs <- call_args(rhs)
+    
+    if (!identical(names(model_exprs), rep_along(model_exprs, ""))) {
+      warning(
+        "\nThe names in the model list:\n\n",
+        as_label(rhs),
+        "\n\nwill be ignored"
+      )
+    }
+    
+    purrr::map_dfr(model_exprs, parse_model, var, dynamic, quo)
+  } else {
+    parse_model(rhs, var, dynamic, quo)
   }
 }
 
 
 
-model_row_from_formula <- function(quo) {
+parse_model <- function(expr, var, dynamic, quo) {
   
-  formula <- quo_get_expr(quo)
+  call_name <- call_name(expr)
   
-  var <- validate_lhs(formula, original_input = quo)
+  if (any(c("lm", "glm", "multinom", "clm") == call_name)) {
+    
+    if (call_name == "multinom" && !requireNamespace("nnet", quietly = TRUE)) {
+      stop("\nPlease install the nnet package in order to use multinom()")
+    } else if (call_name == "clm" &&
+               !requireNamespace("ordinal", quietly = TRUE)) {
+      stop("\nPlease install the ordinal package in order to use clm()")
+    }
+    
+    model_row_from_fitter(expr, var, dynamic, quo)
+  } else {
+    model_row_from_nonfitter(expr, var, dynamic, quo)
+  }
+}
+
+
+
+model_row_from_fitter <- function(expr, var, dynamic, quo) {
   
-  model_call <- 
-    formula %>% 
-    f_rhs() %>% 
-    quo_set_expr(quo = quo, expr = .) %>% 
-    structure(class = c("daps_nonfitter_call", class(.)))
+  expr_std <- call_standardise(expr)
   
-  predictors <- all.vars(model_call)
+  formula <- expr_std$formula
   
-  dplyr::tibble(
+  if (!is_formula(formula, lhs = FALSE)) {
+    stop(
+      '\nThe "formula" argument in the model:\n\n',
+      as_label(expr),
+      "\n\nwithin the model specification:\n\n",
+      as_label(quo),
+      "\n\nmust be a formula with no lefthand side"
+    )
+  }
+  
+  if (!is.null(expr_std$data)) {
+    stop(
+      "The call:\n",
+      as_label(expr),
+      '\nmay not use its "data" argument, since it will be overwritten ',
+      "\nwith your temporal data once it is evaluated."
+    )
+  }
+  
+  predictors <- all.vars(formula)
+  
+  f_lhs(formula) <- var
+  expr_std$formula <- formula
+  model_quo <- quo_set_expr(quo = quo, expr = expr_std)
+  class(model_quo) <- c("daps_fitter_quo", class(model_quo))
+  
+  var <- as_string(var)
+  
+  tibble(
     var = var,
-    predictors = list(predictors), 
-    model_call = list(model_call)
+    dynamic = dynamic,
+    predictors = list(predictors),
+    model_quo = list(model_quo)
   )
 }
 
 
 
-model_row_from_call <- function(quo) {
+model_row_from_nonfitter <- function(expr, var, dynamic, quo) {
   
-  fitter_fn <- call_fn(quo)
+  var <- as_string(var)
+  predictors <- all.vars(expr)
+  model_quo <- quo_set_expr(quo = quo, expr = expr)
+  class(model_quo) <- c("daps_nonfitter_quo", class(model_quo))
   
-  fitter_fn_fmls_names <- fn_fmls_names(fitter_fn)
-  
-  if (any(fitter_fn_fmls_names == "formula")) {
-    
-    quo <- call_standardise(quo)
-    
-    call_args <- call_args(quo)
-    
-    if (!is.null(call_args[["data"]])) {
-      stop(
-        "The call:\n",
-        as_label(quo),
-        "\nmay not use its data argument, since it will be overwritten ",
-        "\nwith your temporal data once it is evaluated."
-      )
-    }
-    
-    formula <- call_args[["formula"]]
-    
-    if (!is_formula(formula, lhs = TRUE)) {
-      stop(
-        "The formula argument in the call:\n",
-        as_label(quo),
-        "\nmust be a two-sided formula."
-      )
-    }
-  } else {
-    
-    first_arg <- call_args(quo)[1L]
-    formula <- first_arg[[1L]]
-    
-    if (names(first_arg) != "" || !is_formula(formula, lhs = TRUE)) {
-      stop(
-        "The first argument in the call must not be named,",
-        "\nand it must be a two-sided formula.",
-        "\nIt will be processed and removed prior to evaluation.",
-        "\nSee ?add_models"
-      )
-    }
-  }
-  
-  var <- validate_lhs(formula, original_input = quo)
-  
-  predictors <- formula %>% f_rhs() %>% all.vars()
-  
-  model_call <- quo %>% structure(class = c("daps_fitter_call", class(.)))
-  
-  dplyr::tibble(
+  tibble(
     var = var,
+    dynamic = dynamic,
     predictors = list(predictors),
-    model_call = list(model_call)
+    model_quo = list(model_quo)
   )
 }

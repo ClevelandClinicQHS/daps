@@ -4,13 +4,10 @@
 \alias{add_metastate_model}
 \title{Create a state transition framework}
 \usage{
-add_metastate_model(daps, state, nodes, transitions)
+add_metastate_model(daps, metastate, nodes, transitions)
 }
 \arguments{
 \item{daps}{A \code{\link{daps}}-class object to add a state-transition framework to.}
-
-\item{state}{A character vector of state names. Must be the same nonzero
-lenth as \code{nodes} and \code{transitions}.}
 
 \item{nodes}{A list the same nonzero length as \code{state} and \code{transitions}. It
 must contain character vectors, each naming the nodes (or variables) that
@@ -20,9 +17,12 @@ should be predicted under the corresponding \code{state}.}
 must contain one-sided formulas, each containing an expression that
 produces one of the elements of \code{state} when evaluated in the context of a
 row of temporal data (provided to \code{\link[=simulate]{simulate()}}).}
+
+\item{state}{A character vector of state names. Must be the same nonzero
+lenth as \code{nodes} and \code{transitions}.}
 }
 \value{
-The input \code{daps} with the added component \code{$metastate_model}, an
+The input \code{daps} with the added component \verb{$metastate_model}, an
 object of class \code{daps_metastate_model}.
 }
 \description{

@@ -9,19 +9,15 @@ rowwise_fns <- list(
         stop("n must be a nonnegative, scalar integer")
       }
       
-      caller_env <- caller_env()
+      caller_env <- parent.frame()
       
-      if (get(".__daps_sim_row__.", envir = caller_env) <= n) {
+      new_row <- eval(quote(.__daps_sim_row__.), caller_env) - n
+      
+      if (new_row < 1) {
         return(default)
       }
       
-      n <- n
-      
-      env <- list(.__daps_sim_row__. = substitute(.__daps_sim_row__. - n))
-      
-      x <- do_call_substitute.default(substitute(x), env)
-      
-      eval(x, caller_env)
+      eval(substitute(x), list(.__daps_sim_row__. = new_row), caller_env)
     }
 )
 

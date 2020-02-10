@@ -21,11 +21,14 @@
 #'
 #' @importFrom dplyr case_when
 #' @export
-add_metastate_model <- function(daps, state, nodes, transitions) {
+add_metastate_model <- function(daps, 
+                                metastate, 
+                                nodes, 
+                                transitions) {
   
-  if (!is_valid_char_vec(state)) {
+  if (!is_valid_char_vec(metastate)) {
     stop(
-      "state must be a character vector of nonzero length\n",
+      "metastate must be a character vector of nonzero length\n",
       "and having no missingness nor duplicates"
     )
   }
@@ -41,7 +44,8 @@ add_metastate_model <- function(daps, state, nodes, transitions) {
     stop("transitions must be a list of formulas, none having a lefthand side")
   }
   
-  if ((length_state <- length(state)) != length(nodes) ||
+  length_state <- length(metastate)
+  if (length_state != length(nodes) ||
       length_state != length(transitions) ||
       length_state == 0L) {
     stop(
@@ -56,11 +60,13 @@ add_metastate_model <- function(daps, state, nodes, transitions) {
   
   daps$metastate_model <-
     dplyr::tibble(
-      state = state,
+      metastate = metastate,
       nodes = nodes,
       transitions = transitions
     ) %>% 
-    structure(class = c("daps_metastate_model", class(.)))
+    structure(
+      class = c("daps_metastate_model", class(.))
+    )
   
   daps
 }

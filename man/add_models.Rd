@@ -35,7 +35,7 @@ Ignored if \code{daps_model_table} is not \code{NULL}.}
 created. If not \code{NULL}, anything specified in \code{...} will be ignored.}
 }
 \value{
-The input \code{daps} with the added component \code{$model_table}, an object
+The input \code{daps} with the added component \verb{$model_table}, an object
 of class \code{daps_model_table}.
 }
 \description{

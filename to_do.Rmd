@@ -1,0 +1,308 @@
+---
+title: "daps demo"
+---
+
+```{r}
+daps1 <-
+  daps() %>% 
+  
+  # coefficients and covariance matrix for: lm, glm, nnet::multinom, MASS::polr
+  # lm and glm:
+  #   - use predict methods
+  #   - (type = "response" for glm)
+  # glm inverse links per family:
+  #   - binomial - ilogit (plogis())
+  #   - poisson - exp()
+  #   - gamma - exp()
+  #   - (look at stats::make.link())
+  # nnet:
+  #   - summary(correlation = TRUE) (ilogit)
+  #   - k - 1 by p vector (first group is 1 - sum)
+  #   - rcat (categorical sampler)
+  #   
+  # Use MASS::mvrnorm() to get simulation distribution (set n to how many
+  # simulations you're doing)
+  
+  # Sort models by descending complexity over time: 
+  # 1) temporality (how far back they look)
+  # 2) Number of unique variable names
+  
+  # Iteratively decide topological ordering 
+  # (look for topological sort algorithms?)
+  # https://rdrr.io/cran/Rfast/man/topological_sort.html
+  # sparse matrices? SparseM package
+  add_models(
+    lm(sbp ~ lag(sbp) + lag(dbp) + sex + race + age, weights = testweights + 1),
+    
+    lm(sbp ~ sex + race + age),
+    
+    lm(dbp ~ lag(sbp) + lag(dbp) + sex + race + age),
+    
+    lm(dbp ~ sex + race + age),
+    
+    glm(
+      diabetes ~
+        sex + race + age + lag(sbp) + lag(sbp, 2) + lag(dbp) + lag(dbp, 2),
+      family = binomial
+    ),
+    
+    glm(diabetes ~ sex + race + age + lag(sbp) + lag(dbp), family = binomial),
+    
+    glm(diabetes ~ sex + race + age, family = binomial),
+    
+    # nnet::multinom(
+    #   chd_risk ~
+    #     lag(sbp) + lag(sbp, 2) + lag(dbp) + lag(dbp, 2) + sex + race + age
+    # ),
+    # 
+    # nnet::multinom(chd_risk ~ lag(sbp) + lag(dbp) + sex + race + age),
+    
+    # glmnet::glmnet(
+    #   formula = chd_risk ~ sbp + lag(sbp) + dbp + lag(dbp) + sex + race + age,
+    #   family = "multinomial"
+    # ),
+    # 
+    # glmnet::glmnet(formula = sex ~ sbp + dbp + age + race, family = "binomial"),
+    
+    age ~ lag(age)
+    # age ~ mean(age, na.rm = TRUE)
+  ) %>% 
+  
+  add_metastate_model(
+    state =
+      c("state1", "state2", "state3"),
+    nodes =
+      list(
+        c("sex", "race", "age", "sbp", "dbp", "chd_risk"),
+        c("sex", "race", "age", "sbp", "dbp", "chd_risk"), # "hdl", "ldl", "triglycerides"),
+        c("sex", "race", "age", "sbp", "dbp", "chd_risk") # , "hdl", "ldl", "triglycerides",
+          # "glucose")
+      ),
+    transitions =
+      list(
+        ~case_when(
+          lag(sbp) >= 135 | lag(dbp) >= 80                            ~ "state3",
+          lag(chd_risk) == "elevated" | sex == "male" & lag(age) > 35 ~ "state2",
+          TRUE                                                        ~ "state1"
+        ),
+        ~case_when(
+          lag(sbp) >= 135 | lag(dbp) >= 80                            ~ "state3",
+          TRUE                                                        ~ "state2"
+        ),
+        ~case_when(
+          TRUE                                                        ~ "state3"
+        )
+      )
+  )
+
+daps1
+# Add id to models
+# Add column of fits to $models object at train()
+```
+
+
+```{r test_data}
+teststatic <- 
+  tibble::tribble(
+    ~id, ~sex,     ~race,
+    1,   "male",   "black",
+    2,   "female", "white",
+    3,   "male",   "black",
+    4,   "male",   "white"
+  )
+
+testtemporal <-
+  tibble::tribble(
+    ~id, ~t, ~sbp, ~dbp, ~age, ~diabetes, ~chd_risk,
+    1,   1,  120,  65,   35,   FALSE,     "low",
+    1,   2,  119,  66,   36,   FALSE,     "normal",
+    1,   3,  118,  68,   50,   FALSE,     "normal",
+    1,   4,  150,  100,  51,   TRUE,      "elevated",
+    2,   1,  139,  81,   64,   FALSE,     "normal",
+    2,   2,  140,  111,  66,   FALSE,      "elevated",
+    2,   3,  137,  85,   66,   TRUE,      "elevated",
+    2,   4,  155,  90,   66,   TRUE,      "elevated",
+    3,   1,  100,  40,   34,   TRUE,      "low",
+    3,   2,  114,  45,   34,   FALSE,     "low",
+    3,   3,  100,  50,   34,   FALSE,     "low",
+    3,   4,  103,  56,   34,   FALSE,     "low",
+    4,   1,  115,  110,  85,   FALSE,      "elevated",
+    4,   2,  140,  125,  86,   TRUE,      "elevated",
+    4,   3,  NA,   NA,   87,   TRUE,      "elevated",
+    4,   4,  NA,   NA,   88,   TRUE,      "elevated"
+  ) %>% 
+  dplyr::mutate(testweights = runif(nrow(.)))
+```
+
+```{r training}
+daps_trained <-
+  daps1 %>%
+  train(teststatic, testtemporal)
+
+lapply(daps_trained$trained_fits$model, class)
+```
+
+```{r}
+# Bypassing initialization() for now
+# initialization() is where we specify how many simulations we're doing 
+# and where the generation of coefficients with MASS::mvrnorm() happens
+
+# Argument in simulate() for whether to incorporate parameter uncertainty
+# True by default
+
+daps_trained %>%
+  simulate(
+    static = teststatic,
+    longitudinal = testtemporal,
+    t.start = 3,
+    t.stop = 6,
+    start.state = "state1"
+  )
+```
+
+
+
+
+```{r}
+testinitialization <-
+  tibble::tribble(
+    ~id, ~state0, ~t0, ~tstop,
+    1,   "state1",  1,      6,
+    2,   "state1",  1,      6,
+    3,   "state1",  1,      6,
+    4,   "state1",  1,      6
+  )
+
+# initialize(
+#     # Take longitudinal data passed to this function and throw out everything not needed to simulate 
+#     # Only look as far back as 
+#     # Two MOs:
+#     # 1. Without data sets 
+#     #    parameters:
+#     #      - n (number of unique ids)
+#     #      - Tibble:
+#     #         - S (number of simulations per id)
+#     #         - start.metastate = NULL (initial state per id)
+#     #         - t.start (provided on a case-by-case basis per id)
+#     #         - t.stop (last timepoint to simulate per id)
+#     # 2. With data sets (static and longitudinal)
+#     #    parameters:
+#     #      - n (number of unique ids)
+#     #      - static
+#     #      - longitudinal
+#     #      - Tibble:
+#     #         - S (number of simulations per id)
+#     #         - start.metastate = NULL (initial state per id)
+#     #         - t.start (function can figure it out)
+#     #         - t.stop (last timepoint to simulate per id)
+#   )
+```
+
+
+
+```{r}
+daps() %>%
+  add_models() %>% 
+  train(static, longitudinal) %>% 
+  initialize() %>%
+  simulate()
+
+# use the butcher package to pare down model objects to include only 
+
+# Model object is a list:
+# $formula
+# $fitter
+# $Model objects list
+#  -> unique to each fitter
+```
+
+```{r simulate}
+simulate(daps_fitted, d)
+```
+
+```{r}
+# library(tidyverse)
+# library(nnet)
+# 
+# 
+# d <-  foreign::read.dta("https://stats.idre.ucla.edu/stat/data/hsbdemo.dta")
+# with(d, do.call(rbind, tapply(write, prog, function(x) c(M = mean(x), SD = sd(x)))))
+# d$prog2 <- relevel(d$prog, ref = "academic")
+# 
+# g <- nnet::multinom(prog2 ~ ses + write, data = d, Hess = TRUE)
+# gs <- summary(g, correlation = TRUE)
+# beta <- gs$coefficients %>% as.vector()
+# S <- solve(g$Hessian)
+# attr(beta, "names") <- dimnames(S)[[1]]
+
+```
+
+
+```{r work}
+# tbl_graph(
+#   nodes = 
+#     tibble(
+#       name = c("state1", "state2", "state3"),
+#       color = c("blue", "green", "red"),
+#       varset = list(c("sbp", "dbp", "bmi"), c("sbp", "dbp", "bmi"), TRUE)
+#     ),
+#   edges = tibble(
+#     from = c(1, 1, 2),
+#     to   = c(2, 3, 3),
+#     logic = list(1 == 2, "a" == 3, 1 ~ 2)
+#   ),
+#   directed = TRUE
+# ) %>% plot
+# 
+# new_state <- function(formula) {
+#   if (!is.null)
+# }
+# 
+# 
+# new_model <- function(states, vars) {
+#   
+#   stopifnot(vapply(states, rlang::is_formula, logical(1L)))
+#   
+#   stopifnot(vapply(vars, rlang::is_formula, logical(1L)))
+#   
+#   process_state <-
+#     lapply(states, )
+#   
+#   
+#   
+#   # purrr::map_dfr(formulas, parse_formula)
+#   
+# }
+# 
+# 
+# process_state <- function(x) {
+#   
+#   lhs <- rlang::f_lhs(x)
+#   
+#   if (!rlang::is_symbol(lhs)) {
+#     "Left-hand side of formula must be a single name of a state."
+#   }
+#   
+#   rhs <- 
+#     x %>% 
+#     terms() %>% 
+#     attr("term.labels") %>% 
+#     rlang::parse_exprs() %>% 
+#     purrr::map_dfr(process_term)
+#   
+#   list(
+#     state = rlang::as_string(lhs),
+#     vars  = process_terms(rhs)
+#   )
+# }
+# 
+# 
+# process_term <- function(x) {
+#   
+#   if (rlang::is_symbol(x)) {
+#     tibble::tibble(var = rlang::as_string(x), t = NA)
+#   } else if (rlang::)
+#     
+# }
+```
+

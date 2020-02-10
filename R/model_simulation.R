@@ -1,7 +1,7 @@
 
 #' Simulate a [`daps`] object.
 #'
-#' Simulates data from `t.start` to `t.stop` for each subject using the
+#' Simulates data from `from` to `to` for each subject using the
 #' metastate model provided in [add_metastate_model()] and the trained model
 #' fits created during [train()].
 #'
@@ -15,33 +15,33 @@
 #' @param longitudinal A data frame with a numeric `id` column and an
 #'   [integerish][rlang::is_integerish] `t` column.
 #' @param s A nonzero integer indicating the number of simulations to perform.
-#' @param t.start,t.stop Each should be a nonzero integer corresponding to the
+#' @param from,to Each should be a nonzero integer corresponding to the
 #'   time point (i.e., the value of `t` as in the `longitudinal` data set) when
 #'   simulation should begin and end. These can both be higher than the highest
-#'   value(s) of the `t` column in `longitudinal`. `t.stop` must not be smaller
-#'   than `t.start`.
-#' @param start.state A character string indicated the initial state of the
-#'   subjects (i.e., at `t = t.start - 1`). Must be one of the states specified
+#'   value(s) of the `t` column in `longitudinal`. `to` must not be smaller
+#'   than `from`.
+#' @param start_metastate A character string indicated the initial state of the
+#'   subjects (i.e., at `t = from - 1`). Must be one of the states specified
 #'   in [add_metastate_model()].
 #'
 #' @return A list of [`tibble`][tibble::tibble]`s` with length `s` with
 #'   simulated data.
 #'
 #' @import rlang
+#' @importFrom purrr pmap_dfr
 #' @export
 simulate <- function(daps, 
                      static = NULL, 
                      longitudinal = NULL, 
-                     s = 1,
-                     
-                     # here for testing purposes for now:
-                     t.start, 
-                     t.stop, 
-                     start.state) {
-  
-  data_split <- setup_sim_data(static, longitudinal, t.start, t.stop)
-  
-  sim_row_env <- new_environment(list(.__daps_sim_row__. = NA_integer_))
+                     from,
+                     to,
+                     h = NULL,
+                     forward = NULL,
+                     impute = FALSE,
+                     lookback_steps = 5L,
+                     s = 1L,
+                     seed = NULL) {
+  sim_row_env <- env(env_parent(), .__daps_sim_row__. = NA_integer_)
   sim_row_fn <-
     new_function(
       args = list(),
@@ -49,243 +49,289 @@ simulate <- function(daps,
       env = sim_row_env
     )
   
-  transitions <-
-    lapply(
-      daps$metastate_model$transitions,
-      prep_transition_env,
-      sub_key = attr(daps$trained_fits, "sub_key"),
-      sim_row_fn = sim_row_fn
+  sub_key <- 
+    longitudinal %>% 
+    colnames() %>% 
+    setdiff("id") %>% 
+    set_names() %>% 
+    syms() %>% 
+    lapply(call2, .fn = "[", quote(.__daps_sim_row__.))
+  
+  mm <-
+    daps$metastate_model %>% 
+    dplyr::mutate(
+      nodes = lapply(.data$nodes, setdiff, y = colnames(static)),
+      transitions = 
+        lapply(
+          .data$transitions,
+          function(quo) {
+            expr <- pryr::substitute_q(quo_get_expr(quo), env = sub_key)
+            env <- env(quo_get_env(quo), !!!rowwise_fns)
+            env_bind_active(env, .__daps_sim_row__. = sim_row_fn)
+            new_quosure(expr, env)
+          }
+        )
     )
   
-  fits <- daps$trained_fits
-  fits$model <- fits$model %>% lapply(prep_model_env, sim_row_fn = sim_row_fn)
+  fits <-
+    daps$trained_fits %>% 
+    dplyr::mutate(
+      predictors = lapply(.data$predictors, setdiff, y = colnames(static)),
+      model = 
+        lapply(
+          .data$model, 
+          make_predict_expr, 
+          sub_key = sub_key, 
+          sim_row_fn = sim_row_fn
+        )
+    )
   
-  lapply(
-    seq_len(s),
-    function(s) {
-      purrr::map_dfr(
-        data_split,
-        simulate_subject,
-        mm = daps$metastate_model,
-        transitions = transitions,
+  longitudinal <-
+    validate_data(longitudinal, data = "longitudinal", action = "simulate")
+  
+  static <-
+    validate_data(
+      static, 
+      data = "static", 
+      action = "simulate",
+      long_ids = longitudinal$id,
+      metastates = mm$metastate
+    )
+  
+  if (!is.null(forward)) {
+    h <- forward
+    from <- to <- "last"
+  }
+  
+  valid_from_to <- validate_from_to(from, to, static, longitudinal, h)
+  from <- valid_from_to$from
+  to <- valid_from_to$to
+  
+  longitudinal <-
+    dplyr::nest_join(static, longitudinal, by = "id") %>%
+    dplyr::pull()
+  
+  static <- purrr::transpose(static)
+  
+  if (!is.null(seed)) set.seed(seed)
+  
+  if (is.null(h)) {
+    data <-
+      pmap_dfr(
+        list(
+          static = static,
+          longitudinal = longitudinal,
+          t_start = from,
+          t_end = to,
+          keep_t_start = from
+        ),
+        setup_single_sim,
+        impute = impute,
+        lookback_steps = lookback_steps,
         fits = fits,
-        s = s,
-        t.start = t.start,
-        t.stop = t.stop,
-        start.state = start.state,
+        mm = mm,
         sim_row_env = sim_row_env
       )
+    
+    rm(static, longitudinal, from, to, valid_from_to)
+    
+    out <-
+      replicate(
+        n = s,
+        pmap_dfr(data, run_simulation, impute, mm, fits, sim_row_env),
+        simplify = FALSE
+      )
+    
+  } else {
+    
+    from_to_seqs <- valid_from_to %>% unname() %>% purrr::pmap(`:`)
+    
+    data <- 
+      pmap_dfr(
+        list(
+          static = static,
+          longitudinal = longitudinal,
+          from_to_seq = from_to_seqs
+        ),
+        function(static, longitudinal, from_to_seq) {
+          pmap_dfr(
+            list(
+              t_start = from_to_seq + 1L,
+              t_end = from_to_seq + max(h),
+              keep_t_start = from_to_seq + min(h)
+            ),
+            setup_single_sim,
+            static = static,
+            longitudinal = longitudinal,
+            impute = impute,
+            lookback_steps = lookback_steps,
+            mm = mm
+          )
+        }
+      )
+    
+    new_t_h <- 
+      purrr::map_dfr(
+        from_to_seqs,
+        function(from_to_seq) tidyr::expand_grid(t = from_to_seq, h = h)
+      )
+    
+    rm(static, longitudinal, from, to, valid_from_to, from_to_seqs)
+    
+    out <-
+      replicate(
+        n = s,
+        change_t_h(
+          pmap_dfr(data, run_simulation, impute, mm, fits, sim_row_env),
+          new_t_h = new_t_h
+        ),
+        simplify = FALSE
+      )
+  }
+
+  if (s > 1L) {
+    out <- set_names(out, paste("Simulation", seq_len(s)))
+  } else {
+    out <- out[[1L]]
+  }
+  
+  out
+}
+
+
+
+setup_single_sim <-  function(static,
+                              longitudinal,
+                              t_start,
+                              t_end,
+                              keep_t_start,
+                              impute,
+                              lookback_steps,
+                              fits,
+                              mm,
+                              sim_row_env) {
+  longitudinal <- dplyr::filter(longitudinal, .data$t < .env$t_start)
+  
+  if (identical(impute, "locf")) {
+    t_before_sim <- t_start - 1L
+    longitudinal <- longitudinal %>% 
+      tidyr::complete(t = min(.env$t_before_sim, .data$t):.env$t_before_sim) %>% 
+      dplyr::arrange(.data$t) %>% 
+      tidyr::fill(-"t") %>% 
+      tidyr::complete(t = .env$t_start:.env$t_end) %>% 
+      dplyr::arrange(.data$t)
+  } else {
+    longitudinal <- longitudinal %>% 
+      tidyr::complete(t = min(.env$t_start - 1L, .data$t):.env$t_end) %>% 
+      dplyr::arrange(.data$t)
+  }
+  
+  data <- c(static[setdiff(names(static), "starting_metastate")], longitudinal)
+  
+  row <- match(t_start, longitudinal$t)
+  row_end <- match(t_end, longitudinal$t)
+  keep_row_start <- match(keep_t_start, longitudinal$t)
+  
+  if (isTRUE(impute)) {
+    
+    candidate_rows <- head(row:1L, n = min(lookback_steps + 1L, row))
+    last_candidate <- candidate_rows[length(candidate_rows)]
+    
+    for (row in candidate_rows) {
+      sim_row_env$.__daps_sim_row__. <- row
+      
+      metastate <-
+        eval_tidy(
+          mm$transitions[[match(static$starting_metastate, mm$metastate)]],
+          data
+        )
+      
+      nodes <- mm$nodes[[match(metastate, mm$metastate)]]
+      
+      data2 <- data
+      
+      for (var in nodes) {
+        pred <- data2[[var]][row] <- get_prediction(fits, var, nodes, data2)
+        if (is.na(pred)) {
+          if (row == last_candidate) {
+            stop(
+              "\nimputation not possible for variable ", var,
+              " for subject with id = ", static$id,
+              "\nwhen simulating from ", t_start, " to ", t_end
+            )
+          }
+          break
+        }
+      }
+      
+      if (!is.na(pred)) break
     }
+    
+  }
+  
+  data$metastate[row - 1L] <- static$starting_metastate
+  
+  tibble(
+    data = list(data),
+    row = row,
+    row_end = row_end,
+    keep_row_start = keep_row_start
   )
 }
 
 
 
-
-simulate_subject <- function(data,
-                             mm,
-                             transitions,
-                             fits,
-                             s,
-                             t.start,
-                             t.stop,
-                             start.state,
-                             sim_row_env) {
-  
-  row.start <- match(t.start, data$t)
-  row.stop <- match(t.stop, data$t)
-  
-  data$state[row.start - 1L] <- start.state
-  
-  for (.__daps_sim_row__. in row.start:row.stop) {
+#' @importFrom tibble as_tibble
+run_simulation <- function(data,
+                           row,
+                           row_end,
+                           keep_row_start,
+                           impute,
+                           mm,
+                           fits,
+                           sim_row_env) {
+  while (row <= row_end) {
+    sim_row_env$.__daps_sim_row__. <- row
     
-    sim_row_env$.__daps_sim_row__. <- .__daps_sim_row__.
+    data$metastate[row] <-
+      eval_tidy(
+        mm$transitions[[match(data$metastate[row - 1L], mm$metastate)]],
+        data
+      )
     
-    transition_call <-
-      transitions[[match(data$state[.__daps_sim_row__. - 1L], mm$state)]]
-    
-    data$state[.__daps_sim_row__.] <- state <- eval_tidy(transition_call, data)
-    
-    nodes <- mm$nodes[[match(state, mm$state)]]
+    nodes <- mm$nodes[[match(data$metastate[row], mm$metastate)]]
     
     for (var in nodes) {
-      
-      if (is.na(data[[var]][.__daps_sim_row__.])) {
-        data[[var]][.__daps_sim_row__.] <-
-          get_prediction(fits, var, nodes, data, s)
-      }
-      
+      data[[var]][row] <- get_prediction(fits, var, nodes, data)
     }
     
+    row <- row + 1L
   }
   
-  data %>%
-    dplyr::as_tibble() %>%
-    dplyr::select("id", "t", "state", dplyr::everything())
+  as_tibble(data)[keep_row_start:row_end, ]
 }
 
 
 
-setup_sim_data <- function(static, longitudinal, t.start, t.stop) {
-  
-  static$id <- validate_data(static, type = "static")
-  
-  longitudinal[c("id", "t")] <- validate_data(longitudinal, "longitudinal")
-  
-  longitudinal <- longitudinal %>%
-    tidyr::complete(.data$id, t = t.start:t.stop) %>% 
-    dplyr::arrange(.data$id, .data$t)
-  
-  dplyr::full_join(static, longitudinal, by = "id") %>%
-    dplyr::mutate(state = NA_character_) %>%
-    dplyr::group_split(.data$id) %>%
-    lapply(as.list)
+change_t_h <- function(x, new_t_h) {
+  old_ncol <- ncol(x)
+  t_i <- match("t", names(x))
+  x[c("t", "h")] <- new_t_h
+  x[c(seq_len(t_i), old_ncol + 1L, (t_i + 1L):old_ncol)]
 }
 
 
 
-prep_transition_env <- function(transition_quo, sub_key, sim_row_fn) {
+get_prediction <- function(fits, var, nodes, data) {
   
-  expr <- do_call_substitute(expr = quo_get_expr(transition_quo), env = sub_key)
-
-  env <-
-    new_environment(data = rowwise_fns, parent = quo_get_env(transition_quo))
-  env_bind_active(.env = env, .__daps_sim_row__. = sim_row_fn)
-  
-  new_quosure(expr = expr, env = env)
-
-  # transition_quo %>% 
-  #   quo_get_expr() %>% 
-  #   do_call_substitute(env = sub_key) %>% 
-  #   quo_set_expr(quo = transition_quo)
-}
-
-
-
-prep_model_env <- function(model, ...) {
-  UseMethod("prep_model_env")
-}
-
-
-
-#' @export
-prep_model_env.daps_trained_lm <- function(model, sim_row_fn, ...) {
-  
-  env <- new_environment(data = rowwise_fns, parent = environment(model$terms))
-  env_bind_active(.env = env, .__daps_sim_row__. = sim_row_fn)
-  
-  environment(model$terms) <- env
-  
-  model
-}
-
-
-
-#' @export
-prep_model_env.daps_deterministic_expr <- function(model, sim_row_fn, ...) {
-  
-  env <- new_environment(data = rowwise_fns, parent = quo_get_env(model))
-  
-  env_bind_active(.env = env, .__daps_sim_row__. = sim_row_fn)
-  
-  quo_set_env(quo = model, env = env)
-}
-
-
-
-
-get_prediction <- function(fits, var, nodes, data, s) {
-  
-  candidate_rows <- which(fits$var == var)
-  
-  for (row in candidate_rows) {
-    
+  for (row in which(fits$var == var)) {
     if (all(fits$predictors[[row]] %in% nodes)) {
-      
-      predicted_value <-
-        predict(
-          fits$model[[row]],
-          data = data,
-          s = s
-        )
-      
-      if (!is.na(predicted_value)) {
-        return(predicted_value)
+      p <- suppressWarnings(suppressMessages(eval(fits$model[[row]])))
+      if (!is.na(p)) {
+        return(p)
       }
-      
     }
   }
   
-  # stop(
-  #   "No model able to predict ", var, " at time ", evalq(t, mask),
-  #   call. = FALSE
-  # )
   NA
 }
-
-
-
-#' @export
-predict.daps_trained_lm <- function(model, data, s, ...) {
-  
-  predict.lm(
-    model,
-    newdata = data,
-    ...
-  )[[1L]]
-  
-}
-
-
-
-
-#' @export
-predict.daps_deterministic_expr <- function(model, data, ...) {
-  eval_tidy(model, data)
-}
-
-
-
-
-
-
-#' @export
-predict.daps_trained_multinom <- function(model, data, s, ...) {
-  
-  terms <- model$terms
-  
-  newdata <- 
-    terms %>%
-    attr("predvars2") %>%
-    eval_tidy(mask, environment(terms)) %>% 
-    list() %>% 
-    dplyr::tibble(data = .)
-  
-  NextMethod(newdata = newdata)
-}
-
-
-
-
-# predict.daps_trained_fit_glm <- function(model, data, s) {
-#   newdata <- eval_tidy(model$predvars, data)
-#   # Account for intercept-free models
-#   model$linkinv(newdata %*% model$coef[s, ])
-# }
-
-
-
-
-
-
-
-
-# scalarize_static_vars <- function(x, static) {
-#   lapply(
-#     x,
-#     purrr::map_at,
-#     .at = dplyr::vars(colnames(static), -"id"),
-#     .f = `[`,
-#     1L
-#   )
-# }

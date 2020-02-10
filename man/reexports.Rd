@@ -13,7 +13,7 @@ These objects are imported from other packages. Follow the links
 below to see their documentation.
 
 \describe{
-  \item{dplyr}{\code{\link[dplyr]{lag}}, \code{\link[dplyr]{case_when}}}
+  \item{dplyr}{\code{\link[dplyr]{case_when}}, \code{\link[dplyr]{lag}}}
 
   \item{magrittr}{\code{\link[magrittr]{\%>\%}}}
 }}

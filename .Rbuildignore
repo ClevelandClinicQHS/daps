@@ -8,3 +8,6 @@
 ^\.RData$
 ^\.Rhistory$
 ^progs$
+^README\.Rmd$
+^to-do\.Rmd$
+^dev$

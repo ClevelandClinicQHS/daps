@@ -21,34 +21,33 @@
 #' @import rlang
 #' @export
 train <- function(daps, static, longitudinal) {
+  static <- validate_data(static, data = "static", action = "train")
   
-  static["id"] <- validate_data(static, "static")
-  
-  longitudinal[c("id", "t")] <- validate_data(longitudinal, "longitudinal")
+  longitudinal <-
+    validate_data(longitudinal, data = "longitudinal", action = "train")
   
   joined_data <- dplyr::full_join(static, longitudinal, by = "id")
   
   all_vars <- colnames(joined_data)
   
-  sub_key <- 
-    all_vars %>% 
-    # `[`(. != "t") %>% 
-    stats::setNames(nm = .) %>% 
-    lapply(function(x) expr((!!sym(x))[.__daps_sim_row__.]))
+  # sub_key <- 
+  #   all_vars %>% 
+  #   # `[`(. != "t") %>% 
+  #   stats::setNames(nm = .) %>% 
+  #   lapply(function(x) expr((!!sym(x))[.__daps_sim_row__.]))
   
   daps$trained_fits <-
     daps$model_table %>% 
     purrr::pmap_dfr(
-      function(var, predictors, model_call) {
+      function(var, predictors, model_quo, ...) {
+        
+        validated_predictors <- intersect(all_vars, predictors)
         
         trained_model <-
           train_model(
-            model_call = model_call, 
-            sub_key = sub_key,
+            model_quo = model_quo, 
             data = joined_data 
           )
-        
-        validated_predictors <- intersect(all_vars, predictors)
         
         dplyr::tibble(
           var = var, 
@@ -57,10 +56,7 @@ train <- function(daps, static, longitudinal) {
         )
       }
     ) %>% 
-    structure(
-      sub_key = sub_key,
-      class = c("daps_trained_fits", class(.))
-    )
+    structure(class = c("daps_trained_fits", class(.)))
   
   daps
 }
@@ -68,202 +64,135 @@ train <- function(daps, static, longitudinal) {
 
 
 
-train_model <- function(model_call, ...) {
+train_model <- function(model_quo, ...) {
   UseMethod("train_model")
 }
 
 
 
 #' @export
-train_model.daps_nonfitter_call <- function(model_call, sub_key, ...) {
-  
-  model_call %>% 
-    do_call_substitute(sub_key) %>% 
-    structure(class = c("daps_deterministic_expr", class(.)))
-  
+train_model.daps_nonfitter_quo <- function(model_quo, ...) {
+  model_quo
 }
 
 
 #' @export
-train_model.daps_fitter_call <- function(model_call, sub_key, data) {
+train_model.daps_fitter_quo <- function(model_quo, data) {
   
-  model_call_env <- quo_get_env(model_call)
-  
-  fitter_fn <- call_fn(model_call)
-  
+  model_quo_env <- quo_get_env(model_quo)
+
+  fitter_fn <- call_fn(model_quo)
+
   fitter_fn_fmls <- fn_fmls_names(fitter_fn)
-  
+
   if (any(fitter_fn_fmls == "formula")) {
+
+    model_standardised <- call_standardise(model_quo)
+
+    quo_args <- call_args(model_standardised)
+
+    formula <- quo_args[["formula"]] %>% eval(model_quo_env)
     
-    model_standardised <- call_standardise(model_call)
+    class(formula) <- c("daps_formula", class(formula))
     
-    call_args <- call_args(model_standardised)
-    
-    formula <-
-      call_args[["formula"]] %>% 
-      eval(model_call_env) %>%
-      structure(class = c("daps_formula", class(.)))
-    
-    env_dependent_arg_names <- env_dependent_arg_names(fitter_fn, call_args)
-    
-    env_dependent_args <- call_args[env_dependent_arg_names]
-    
-    other_call_mods <-
-      lapply(env_dependent_args, call2, .fn = "col_by_id")
-    
+    environment(formula) <-
+      env(
+        environment(formula),
+        .__daps_variables_by_id__. = .__daps_variables_by_id__.
+      )
+
+    # env_dependent_arg_names <- env_dependent_arg_names(fitter_fn, quo_args)
+    # 
+    # env_dependent_args <- quo_args[env_dependent_arg_names]
+    # 
+    # other_quo_mods <-
+    #   lapply(env_dependent_args, call2, .fn = "col_by_id")
+
     model <-
-      model_standardised %>% 
-      call_modify(formula = formula, data = data, !!!other_call_mods) %>% 
+      model_standardised %>%
+      call_modify(formula = formula, data = data) %>%
+      # call_modify(formula = formula, data = data, !!!other_call_mods) %>%
       eval_tidy(data)
+
+    # env_dependent_args <- env_dependent_args %>%
+    #   lapply(do_call_substitute, env = sub_key)
+    # 
+    # model$call <- model$call %>%
+    #   call_modify(data = zap(), !!!env_dependent_args)
+
+    # variables_attr_args <- attr(model$terms, "variables") %>% call_args()
+    # 
+    # attr(model$terms, "variables") <- call2("list", !!!variables_attr_args)
+    # 
+    # daps_data_row_names <- as.character(variables_attr_args)
+    # 
+    # attr(model, "daps_data_row_call") <-
+    #   attr(model$terms, "predvars") %>%
+    #   call_args() %>%
+    #   setNames(daps_data_row_names) %>% 
+    #   lapply(do_call_substitute, env = sub_key) %>%
+    #   {call2("tibble", !!!.)}
+    # 
+    # attr(model$terms, "predvars") <- call2("list", !!!syms(daps_data_row_names))
+    # 
+    # class(model) <- class(model) %>% 
+    #   c("daps_trained_model", paste0("daps_trained_", .[1L]), .)
     
-    env_dependent_args <- env_dependent_args %>%
-      lapply(do_call_substitute, env = sub_key)
+    model
     
-    model$call <- model$call %>%
-      call_modify(data = zap(), !!!env_dependent_args)
-    
-  } else {
-    formula <-
-      call_args(model_call)[[1L]] %>% 
-      eval(data, model_call_env) %>% 
-      structure(class = c("daps_formula", class(.)))
-    
-    mf <- stats::model.frame(formula, data = data)
-    
-    x <- stats::model.matrix(formula, data = data)
-    y <- mf[[1L]]
-    
-    predvars <-
-      mf %>%
-      attr("terms") %>%
-      stats::delete.response() %>% 
-      attr("predvars") %>%
-      do_call_substitute(sub_key)
-    
-    model <-
-      model_call %>% 
-      call_modify(formula = zap(), x = x, y = y) %>% 
-      eval_tidy(data)
-  }
-  
-  new_trained_fit(model, sub_key = sub_key)
-}
-
-
-
-new_trained_fit <- function(x, ...) {
-  UseMethod("new_trained_fit")
-}
-
-
-#' @export
-new_trained_fit.lm <- function(x, sub_key, ...) {
-  
-  attr(x$terms, "variables") <-
-    x$terms %>% 
-    attr("variables") %>% 
-    call_args() %>%
-    # lapply(do_call_substitute, env = sub_key) %>%
-    {call2("list", !!!.)}
-  
-  attr(x$terms, "predvars") <-
-    x$terms %>% 
-    attr("predvars") %>% 
-    call_args() %>%
-    lapply(do_call_substitute, env = sub_key) %>%
-    {call2("list", !!!.)}
-  
-  class(x) <- c("daps_trained_lm", class(x))
-  
-  x
-}
-
-
-
-
-env_dependent_arg_names <- function(fitter_fn, call_args) {
-  intersect(
-    x = names(call_args),
-    y = 
-      if (identical(fitter_fn, stats::lm)) {
-        c("weights", "subset", "offset")
-      } else if (identical(fitter_fn, stats::glm)) {
-        c("weights", "subset", "offset", "etastart", "mustart")
-      }
-  )
+  } 
+  # else {
+  #   formula <-
+  #     call_args(model_quo)[[1L]] %>%
+  #     eval(data, model_quo_env) %>%
+  #     structure(class = c("daps_formula", class(.)))
+  # 
+  #   mf <- stats::model.frame(formula, data = data)
+  # 
+  #   x <- stats::model.matrix(formula, data = data)
+  #   y <- mf[[1L]]
+  # 
+  #   predvars <-
+  #     mf %>%
+  #     attr("terms") %>%
+  #     stats::delete.response() %>%
+  #     attr("predvars") %>%
+  #     do_call_substitute(sub_key)
+  # 
+  #   model <-
+  #     model_quo %>%
+  #     call_modify(formula = zap(), x = x, y = y) %>%
+  #     eval_tidy(data)
+  # }
+  # 
+  # new_trained_fit(model, sub_key)
 }
 
 
 
 #' @export
-new_trained_fit.multinom <- function(x, sub_key, ...) {
+terms.daps_formula <- function(x, ...) {
   
-  attr(x$terms, "predvars2") <-
-    x$terms %>% 
-    stats::delete.response() %>% 
-    attr("predvars") %>% 
-    call_args() %>%
-    lapply(do_call_substitute, env = sub_key) %>%
-    {call2("list", !!!.)}
+  terms <- NextMethod()
   
-  attr(x$terms, "predvars") <- quote(data[[1L]])
+  attr(terms, "variables") <-
+    call2(".__daps_variables_by_id__.", !!!call_args(attr(terms, "variables")))
   
-  class(x) <- c("daps_trained_multinom", class(x))
-  
-  x
-}
-
-#' @export
-terms.daps_formula <- function(...) {
-  
-  terms <- stats::terms.formula(...)
-  
-  variables_attr_args <- terms %>% attr("variables") %>% call_args()
-  
-  new_variables_attr <- call2("variables_by_id", !!!variables_attr_args)
-  
-  structure(
-    terms,
-    variables = new_variables_attr
-  )
+  terms
 }
 
 
 
-variables_by_id <- function(...) {
-  
-  list_call <- call2("list", !!!exprs(...))
+.__daps_variables_by_id__. <- function(...) {
   
   caller_env <- caller_env()
   
   caller_env %>% 
-    split(.$id) %>% 
-    lapply(eval, expr = list_call) %>% 
-    purrr::reduce(function(x, y) purrr::list_merge(x, !!!y))
-}
-
-
-#' @export
-split.environment <- function(x, f, drop = FALSE, ...) {
-  x %>% 
     as.list() %>% 
-    as.data.frame(stringsAsFactors = FALSE) %>% 
-    split.data.frame(f = f, drop = drop, ...) %>% 
-    lapply(as_environment, parent = parent.env(x))
+    dplyr::as_tibble() %>% 
+    dplyr::group_by(.data$id) %>% 
+    dplyr::transmute(...) %>%
+    dplyr::ungroup() %>% 
+    dplyr::select(-"id") %>% 
+    lapply(identity)
 }
-
-
-
-col_by_id <- function(expr) {
-  
-  expr <- enexpr(expr)
-  
-  caller_env <- caller_env()
-  
-  caller_env %>% 
-    split(.$id) %>% 
-    lapply(eval, expr = expr) %>% 
-    purrr::flatten_dbl()
-}
-
-

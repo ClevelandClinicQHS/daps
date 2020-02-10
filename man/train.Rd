@@ -15,7 +15,7 @@ train(daps, static, longitudinal)
 \link[rlang:is_integerish]{integerish} \code{t} column.}
 }
 \value{
-The input \code{daps} with the added component \code{$trained_fits}, an object
+The input \code{daps} with the added component \verb{$trained_fits}, an object
 of class \code{daps_trained_fits}.
 }
 \description{

@@ -16,7 +16,7 @@ lag <- function(x, n = 1, default = NA, ...) {
   
   lag_expr <- do_call_substitute(expr, env)
   
-  eval(expr = lag_expr, envir = caller_env)
+  eval(expr = lag_expr, envir = caller_env) 
 }
 
 usethis::use_data(lag, internal = TRUE, overwrite = TRUE)

@@ -4,8 +4,19 @@
 \alias{simulate}
 \title{Simulate a \code{\link{daps}} object.}
 \usage{
-simulate(daps, static = NULL, longitudinal = NULL, s = 1, t.start,
-  t.stop, start.state)
+simulate(
+  daps,
+  static = NULL,
+  longitudinal = NULL,
+  from,
+  to,
+  h = NULL,
+  forward = NULL,
+  impute = FALSE,
+  lookback_steps = 5L,
+  s = 1L,
+  seed = NULL
+)
 }
 \arguments{
 \item{daps}{A \code{\link{daps}}-class object to simulate. Must have a
@@ -17,16 +28,16 @@ with \code{\link[=train]{train()}} and \code{\link[=add_metastate_model]{add_met
 \item{longitudinal}{A data frame with a numeric \code{id} column and an
 \link[rlang:is_integerish]{integerish} \code{t} column.}
 
-\item{s}{A nonzero integer indicating the number of simulations to perform.}
-
-\item{t.start, t.stop}{Each should be a nonzero integer corresponding to the
+\item{from, to}{Each should be a nonzero integer corresponding to the
 time point (i.e., the value of \code{t} as in the \code{longitudinal} data set) when
 simulation should begin and end. These can both be higher than the highest
-value(s) of the \code{t} column in \code{longitudinal}. \code{t.stop} must not be smaller
-than \code{t.start}.}
+value(s) of the \code{t} column in \code{longitudinal}. \code{to} must not be smaller
+than \code{from}.}
 
-\item{start.state}{A character string indicated the initial state of the
-subjects (i.e., at \code{t = t.start - 1}). Must be one of the states specified
+\item{s}{A nonzero integer indicating the number of simulations to perform.}
+
+\item{start_metastate}{A character string indicated the initial state of the
+subjects (i.e., at \code{t = from - 1}). Must be one of the states specified
 in \code{\link[=add_metastate_model]{add_metastate_model()}}.}
 }
 \value{
@@ -34,7 +45,7 @@ A list of \code{\link[tibble:tibble]{tibble}}\code{s} with length \code{s} with
 simulated data.
 }
 \description{
-Simulates data from \code{t.start} to \code{t.stop} for each subject using the
+Simulates data from \code{from} to \code{to} for each subject using the
 metastate model provided in \code{\link[=add_metastate_model]{add_metastate_model()}} and the trained model
 fits created during \code{\link[=train]{train()}}.
 }
