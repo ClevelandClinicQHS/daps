@@ -44,11 +44,20 @@ library(tidyverse)
 library(daps)
 ```
 
+topological sorting: first do all the static variables and then temporal
+check for intra-timeslice dependencies. 
+
+# For each variable:
+    #   (1) get model (models have binary flag that indicate intra-timeslice dependencies)
+    #       if max of flags is 1, go into subroutine in order to generate dag and topological sort
+
 ```{r create_daps_object}
 daps1 <-
   daps() %>% 
   
   add_models(
+    
+    diabetes(t) := glm(~sex + lag(dbp, 2) + lag(sbp) + lag(dbp) + lag(sbp, 2) + race + age, family = binomial),
     
     age(t) := lag(age) + 1,
     
@@ -62,13 +71,17 @@ daps1 <-
     dbp(t) := lm(~lag(sbp) + lag(dbp) + sex + race + age),
     dbp(t) := lm(~sex + race + age),
     
-    diabetes(t) := glm(~sex + race + age + lag(sbp) + lag(sbp, 2) + lag(dbp) + lag(dbp, 2), family = binomial),
+    dbp(t) := lm(~sbp),
+    
+    # Find a way to determine the intratimeslice variables each model is using.
+    # During simulation, when you come across one that has at least one intraslice model, do the others first.
+    
     diabetes(t) := glm(~sex + race + age + lag(sbp) + lag(dbp), family = binomial),
     diabetes(t) := glm(~sex + race + age, family = binomial),
     
     chd_risk(t) := list(
       clm(~ lag(sbp) + lag(dbp) + sex + race + age),
-      multinom(~ lag(sbp) + lag(dbp) + sex + race + age)
+      multinom(~ lag(sbp) + slide_mean(dbp) + sex + race + age)
     ),
     
     glucose(t) := lm(~sbp + dbp + diabetes + age + sex + race),
@@ -77,12 +90,20 @@ daps1 <-
     glucose(t) := lm(~age + sex + race),
     glucose(t) := lag(glucose)
     
+    # sex := categorical(c("M", "F"), M = .495),
+    # sex := factor(rbinom(1, 1, .505), 0:1, c("Male", "Female")),
+    # 
+    # 
+    # race := categorical(M = .495, F = .505),
+    #   factor(
+    #     1:3 %*% rmultinom(1, 1, c(.7, .25, .05)),
+    #     1:3,
+    #     c("White", "Black", "Other")
+    #   )
+      
   ) %>%
   
   add_metastate_model(
-    # implement a "default_metastate", which is the first "state" unless the user
-    # specifies
-    # 
     metastate = c("state1", "state2", "state3"),
     nodes =
       list(
@@ -105,7 +126,6 @@ daps1 <-
           TRUE                                                        ~ "state3"
         )
       )
-    # default_state = NULL
   )
 
 daps1
@@ -166,7 +186,7 @@ simulate(
   h = NULL,
   from = "last",
   to = 10,
-  impute = FALSE,
+  impute = TRUE,
   seed = 20200123
 )
 
@@ -188,7 +208,7 @@ daps_trained %>%
     h = NULL,
     from = 5,
     to = 7,
-    impute = TRUE
+    impute = "locf"
   )
 
 # Add in a count of patients/observations with incomplete predictions
@@ -202,63 +222,4 @@ daps_trained %>%
 #   add_metastate_model() %>%
 #   train() %>%
 #   simulate()
-```
-
-# TO DO list 2020-01-13
-
-  - Revise the example model
-    * Add a treatment variable ("none", "antihypertensives", "statins", "both")
-    * Add incident outcomes within each observation year
-  - Make a sufficiently deidentified data set, ideally using EHR
-    * Apply for IRB to create a public data set
-      - ADI, year, etc.
-      - (talk to Amy Nowacki)
-  - Incorporate "static" versus "dynamic" simuation. Put this switch in the initialize() function (mode = c("static", "dynamic"); add "horizon" parameter--NULL implies).
-  - seed parameter in simulate(); t0 parameter in simulate
-   
-## Future packages
-
-  1. Forecast accuracy - functions to join original data back up with simulated data in order to test the accuracy of the predictions
-  2. Parameter uncertainty
-  3. Adapting irregular temporal data to discrete time
-
-
-```{r}
-# nonparsnip <- 
-#   lm(
-#     sbp ~ lag(sbp) + lag(dbp) + sex + race + age, 
-#     data = full_join(teststatic, testtemporal)
-#   )
-# 
-# nonparsnip
-# 
-# parsnip <-
-#   linear_reg() %>% 
-#   set_engine(engine = "lm") %>% 
-#   fit(
-#     formula = sbp ~ lag(sbp) + lag(dbp) + sex + race + age,
-#     data = full_join(teststatic, testtemporal)
-#   )
-# 
-# parsnip
-# 
-# parsnip_xy <-
-#   linear_reg() %>% 
-#   set_engine(engine = "lm") %>% 
-#   fit_xy(
-#     x =
-#       with(
-#         full_join(teststatic, testtemporal, by = "id"),
-#         cbind(lag(sbp), lag(dbp), sex, race, age)
-#       ),
-#     y = full_join(teststatic, testtemporal)$sbp
-#   )
-# 
-# parsnip_xy
-# 
-# predict(nonparsnip, tibble(sbp = c(90, 95), dbp = c(55, 70), sex = c("male", "male"), race = c("white", "white"), age = c(50, 51)))
-# 
-# predict(parsnip, new_data = tibble(sbp = c(90, 95), dbp = c(55, 70), sex = c("male", "male"), race = c("white", "white"), age = c(50, 51)))
-# 
-# predict.model_fit(parsnip, new_data = tibble(sbp = c(90, 95), dbp = c(55, 70), sex = c("male", "male"), race = c("white", "white"), age = c(50, 51)))
 ```

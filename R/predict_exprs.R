@@ -1,27 +1,23 @@
 
-make_predict_expr <- function(x, sub_key, sim_row_fn) {
-  UseMethod("make_predict_expr")
+make_pred_expr <- function(x, env, sub_key) {
+  UseMethod("make_pred_expr")
 }
 
 
 #' @export
-make_predict_expr.daps_nonfitter_quo <- function(x, sub_key, sim_row_fn) {
+make_pred_expr.daps_nonfitter_quo <- function(x, env, sub_key) {
   
-  expr <- pryr::substitute_q(quo_get_expr(x), env = sub_key)
+  expr <- substitute_q2(quo_get_expr(x), env = sub_key)
 
-  env <- env(quo_get_env(x), !!!rowwise_fns)
-  env_bind_active(env, .__daps_sim_row__. = sim_row_fn)
-  
   expr(eval_tidy(!!new_quosure(expr = expr, env = env), data))
 }
 
 
 
-#' @importFrom stats predict.lm
 #' @export
-make_predict_expr.lm <- function(x, sub_key, sim_row_fn) {
+make_pred_expr.lm <- function(x, env, sub_key) {
   
-  qc <- get_predict_components(x, sub_key, sim_row_fn)
+  qc <- get_predict_components(x, env, sub_key)
   
   expr({
     data_row <- eval_tidy(!!qc$data_row_quo, data)
@@ -30,12 +26,10 @@ make_predict_expr.lm <- function(x, sub_key, sim_row_fn) {
 }
 
 
-
-#' @importFrom stats predict.glm
 #' @export
-make_predict_expr.glm <- function(x, sub_key, sim_row_fn) {
+make_pred_expr.glm <- function(x, env, sub_key) {
   
-  qc <- get_predict_components(x, sub_key, sim_row_fn)
+  qc <- get_predict_components(x, env, sub_key)
   
   expr({
     data_row <- eval_tidy(!!qc$data_row_quo, data)
@@ -53,13 +47,11 @@ make_predict_expr.glm <- function(x, sub_key, sim_row_fn) {
 }
 
 
-
-
 #' @importFrom stats predict
 #' @export
-make_predict_expr.multinom <- function(x, sub_key, sim_row_fn) {
+make_pred_expr.multinom <- function(x, env, sub_key) {
   
-  qc <- get_predict_components(x, sub_key, sim_row_fn)
+  qc <- get_predict_components(x, env, sub_key)
   
   expr({
     data_row <- eval_tidy(!!qc$data_row_quo, data)
@@ -70,9 +62,9 @@ make_predict_expr.multinom <- function(x, sub_key, sim_row_fn) {
 
 #' @importFrom stats predict
 #' @export
-make_predict_expr.clm <- function(x, sub_key, sim_row_fn) {
+make_pred_expr.clm <- function(x, env, sub_key) {
   
-  qc <- get_predict_components(x, sub_key, sim_row_fn)
+  qc <- get_predict_components(x, env, sub_key)
   
   expr({
     data_row <- eval_tidy(!!qc$data_row_quo, data)
@@ -84,29 +76,33 @@ make_predict_expr.clm <- function(x, sub_key, sim_row_fn) {
 
 
 
-#' @importFrom dplyr tibble
-get_predict_components <- function(x, sub_key, sim_row_fn) {
+#' @importFrom tibble tibble
+get_predict_components <- function(x, env, sub_key) {
   
-  variables_attr_args <- attr(x$terms, "variables") %>% call_args()
+  attr(x$terms, "variables")[[1L]] <- quote(list)
   
-  attr(x$terms, "variables") <- call2("list", !!!variables_attr_args)
-  
-  daps_data_row_names <- as.character(variables_attr_args)
-  
-  data_row_quo_expr <-
-    attr(x$terms, "predvars") %>%
+  daps_data_row_names <-
+    attr(x$terms, "variables") %>%
     call_args() %>%
-    `[`(-1L) %>% 
+    as.character()
+  
+  data_row_quo_args <-
+    x$terms %>% 
+    delete.response() %>% 
+    attr("predvars") %>%
+    call_args() %>%
     set_names(daps_data_row_names[-1L]) %>% 
-    lapply(pryr::substitute_q, env = sub_key) %>%
-    {call2("tibble", !!!.)}
+    lapply(substitute_q2, env = sub_key)
+  
+  data_row_quo_expr <- call2("tibble", !!!data_row_quo_args)
   
   attr(x$terms, "predvars") <- call2("list", !!!syms(daps_data_row_names))
 
-  data_row_quo_env <- env(environment(x$terms), !!!rowwise_fns)
-  env_bind_active(data_row_quo_env, .__daps_sim_row__. = sim_row_fn)
+  # data_row_quo_env <-
+  #   environment(x$terms) %>% 
+  #   append_sim_row_env(rowwise_fns, sim_row_fn)
   
-  data_row_quo <- new_quosure(expr = data_row_quo_expr, env = data_row_quo_env)
+  data_row_quo <- new_quosure(expr = data_row_quo_expr, env = env)
   
   list(model = x, data_row_quo = data_row_quo)
 }

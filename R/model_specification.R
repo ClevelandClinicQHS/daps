@@ -42,6 +42,7 @@ add_models <- function(daps, ..., daps_model_table = NULL) {
       
       enquos(..., .unquote_names = FALSE) %>%
         purrr::map_dfr(parse_model_spec) %>% 
+        tibble::add_column(model_id = seq_len(nrow(.)), .before = 1L) %>% 
         structure(class = c("daps_model_table", class(.)))
       
     } else {
@@ -58,14 +59,9 @@ add_models <- function(daps, ..., daps_model_table = NULL) {
 }
 
 
-
 parse_model_spec <- function(quo) {
   
-  expr <- quo_get_expr(quo)
-  
-  if (!is_call(expr) ||
-      !identical(expr[[1L]], quote(`:=`)) ||
-      !identical(call_args_names(expr), c("", ""))) {
+  if (!quo_is_call(quo, name = ":=", n = 2L, ns = "")) {
     stop(
       "The model:\n\n",
       as_label(quo),
@@ -76,19 +72,15 @@ parse_model_spec <- function(quo) {
     )
   }
   
-  lhs <- expr[[2L]]
-  rhs <- expr[[3L]]
+  formula <- eval_tidy(quo, list(`:=` = `~`))
+  lhs <- f_lhs(formula)
+  rhs <- f_rhs(formula)
   
-  if (is_call(lhs)) {
+  if (is_call(lhs, n = 1L, ns = "") && 
+      all.equal(the_t <- call_args(lhs), syms("t"), check.attributes = FALSE) &&
+      !is_named(the_t)) {
     
     var <- lhs[[1L]]
-    
-    if (!is_symbol(var) ||
-        !identical(call_args_names(lhs), "") ||
-        !is_symbol(lhs[[2L]], "t")) {
-      stop("dynamic variables must be of the form:\n\nvarname(t)")
-    }
-    
     dynamic <- TRUE
     
   } else if (is_symbol(lhs)) {
@@ -101,25 +93,26 @@ parse_model_spec <- function(quo) {
       "The lefthand side of the model equation:\n\n",
       as_label(quo),
       "\n\nmust be of the form:\n\n",
-      "single_static_variable_name",
+      "static_variable_name",
       "\n\nor:\n\n",
       "dynamic_variable_name(t)"
     )
   }
   
-  if (is_call(rhs) && call_name(rhs) == "list") {
+  if (is_call(rhs, name = "list", ns = "")) {
     
     model_exprs <- call_args(rhs)
     
-    if (!identical(names(model_exprs), rep_along(model_exprs, ""))) {
+    if (any(have_name(model_exprs))) {
       warning(
         "\nThe names in the model list:\n\n",
         as_label(rhs),
         "\n\nwill be ignored"
       )
     }
-    
+
     purrr::map_dfr(model_exprs, parse_model, var, dynamic, quo)
+    
   } else {
     parse_model(rhs, var, dynamic, quo)
   }
@@ -127,37 +120,47 @@ parse_model_spec <- function(quo) {
 
 
 
-parse_model <- function(expr, var, dynamic, quo) {
+parse_model <- function(x, var, dynamic, quo) {
   
-  call_name <- call_name(expr)
+  is_fitter <-
+    purrr::pmap_lgl(
+      list(
+        name = c("lm", "glm", "multinom", "clm"),
+        ns = lapply(c("stats", "stats", "nnet", "ordinal"), c, "")
+      ),
+      is_call,
+      x = x
+    ) %>% 
+    any()
   
-  if (any(c("lm", "glm", "multinom", "clm") == call_name)) {
-    
-    if (call_name == "multinom" && !requireNamespace("nnet", quietly = TRUE)) {
+  if (is_fitter) {
+  
+    if (call_name(x) == "multinom" &&
+        !requireNamespace("nnet", quietly = TRUE)) {
       stop("\nPlease install the nnet package in order to use multinom()")
-    } else if (call_name == "clm" &&
+    } else if (call_name(x) == "clm" &&
                !requireNamespace("ordinal", quietly = TRUE)) {
       stop("\nPlease install the ordinal package in order to use clm()")
     }
     
-    model_row_from_fitter(expr, var, dynamic, quo)
+    model_row_from_fitter(x, var, dynamic, quo)
   } else {
-    model_row_from_nonfitter(expr, var, dynamic, quo)
+    model_row_from_nonfitter(x, var, dynamic, quo)
   }
 }
 
 
 
-model_row_from_fitter <- function(expr, var, dynamic, quo) {
+model_row_from_fitter <- function(x, var, dynamic, quo) {
   
-  expr_std <- call_standardise(expr)
+  expr_std <- call_standardise(x)
   
   formula <- expr_std$formula
   
   if (!is_formula(formula, lhs = FALSE)) {
     stop(
       '\nThe "formula" argument in the model:\n\n',
-      as_label(expr),
+      as_label(x),
       "\n\nwithin the model specification:\n\n",
       as_label(quo),
       "\n\nmust be a formula with no lefthand side"
@@ -167,13 +170,13 @@ model_row_from_fitter <- function(expr, var, dynamic, quo) {
   if (!is.null(expr_std$data)) {
     stop(
       "The call:\n",
-      as_label(expr),
+      as_label(x),
       '\nmay not use its "data" argument, since it will be overwritten ',
       "\nwith your temporal data once it is evaluated."
     )
   }
   
-  predictors <- all.vars(formula)
+  # predictors <- all.vars(formula)
   
   f_lhs(formula) <- var
   expr_std$formula <- formula
@@ -185,24 +188,24 @@ model_row_from_fitter <- function(expr, var, dynamic, quo) {
   tibble(
     var = var,
     dynamic = dynamic,
-    predictors = list(predictors),
+    # predictors = list(predictors),
     model_quo = list(model_quo)
   )
 }
 
 
 
-model_row_from_nonfitter <- function(expr, var, dynamic, quo) {
+model_row_from_nonfitter <- function(x, var, dynamic, quo) {
   
   var <- as_string(var)
-  predictors <- all.vars(expr)
-  model_quo <- quo_set_expr(quo = quo, expr = expr)
+  # predictors <- all.vars(x)
+  model_quo <- quo_set_expr(quo = quo, expr = x)
   class(model_quo) <- c("daps_nonfitter_quo", class(model_quo))
   
   tibble(
     var = var,
     dynamic = dynamic,
-    predictors = list(predictors),
+    # predictors = list(predictors),
     model_quo = list(model_quo)
   )
 }

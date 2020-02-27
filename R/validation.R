@@ -1,4 +1,6 @@
 
+#' @importFrom dplyr arrange
+#' @importFrom tidyr complete
 validate_data <- function(x, data, action, long_ids = NULL, metastates = NULL) {
   
   if (!is.data.frame(x)) {
@@ -47,7 +49,7 @@ validate_data <- function(x, data, action, long_ids = NULL, metastates = NULL) {
     }
     
   } else if (action == "simulate") {
-    x <- x %>% tidyr::complete(id = .env$long_ids) %>% dplyr::arrange(.data$id)
+    x <- x %>% complete(id = .env$long_ids) %>% arrange(.data$id)
     
     if (any(names(x) == "starting_metastate")) {
       
@@ -72,19 +74,6 @@ validate_data <- function(x, data, action, long_ids = NULL, metastates = NULL) {
 
 
 
-# validate_start_metastate <- function(x, ids) {
-#   
-#   if (is_string(x)) {
-#     out <- rep_along(along = ids, x)
-#   } else if (is.data.frame(x)) {
-#     if (ncol(x) != 2L || )
-#   }
-#   
-#   out
-# }
-
-
-
 validate_lhs <- function(x, original_input = x) {
   
   force(original_input)
@@ -106,6 +95,181 @@ validate_lhs <- function(x, original_input = x) {
 is_valid_char_vec <- function(x) {
   is.character(x) && length(x) > 0L && !anyNA(x) && !anyDuplicated(x)
 }
+
+
+
+
+validate_predictors <- function(x, model_id, ...) {
+  UseMethod("validate_predictors")
+}
+
+
+
+#' @import rlang
+#' @export
+validate_predictors.daps_fitter_quo <- function(x, model_id, ...) {
+  quo_get_expr(x)$formula[-2L] %>% 
+    terms.formula() %>% 
+    attr("variables") %>% 
+    call_args() %>% 
+    purrr::map_dfr(preds_from_call, env = quo_get_env(x), ...) %>% 
+    tibble::add_column(model_id = model_id, .before = 1L)
+}
+
+
+#' @import rlang
+#' @export
+validate_predictors.daps_nonfitter_quo <- function(x, model_id, ...) {
+  
+  x %>% 
+    quo_get_expr() %>% 
+    preds_from_call(env = quo_get_env(x), ...) %>% 
+    tibble::add_column(model_id = model_id, .before = 1L)
+}
+
+
+#' @importFrom tibble tibble
+preds_from_call <- function(x,
+                            temporal_vars,
+                            static_vars,
+                            env,
+                            rowwise_fn_nms = ls(rowwise_fns, sorted = FALSE),
+                            rowwise_fn_env = as.environment(rowwise_fns),
+                            ...) {
+  
+  if (is.call(x)) {
+    
+    if (is_call(x, rowwise_fn_nms, ns = c("", "daps"))) {
+      
+      if (call_name(x) == "lag") {
+        out <- validate_lag(x, temporal_vars, env, rowwise_fn_env)
+      } else {
+        out <- validate_slide(x, temporal_vars, env, rowwise_fn_env)
+      }
+      
+    } else if (is_call(x[[1L]], rowwise_fn_nms, ns = c("", "daps"))) {
+      stop(
+        "\nThe special daps temporal functions (e.g., lag, slide_mean) do",
+        "\nnot return functions, and cannot be called, as in:\n\n",
+        as_label(x)
+      )
+    } else {
+      out <-
+        purrr::map_dfr(
+          if (is.call(x[[1L]])) x else x[-1L],
+          preds_from_call,
+          temporal_vars = temporal_vars,
+          static_vars = static_vars,
+          env = env,
+          rowwise_fn_nms = rowwise_fn_nms,
+          rowwise_fn_env = rowwise_fn_env
+        )
+    }
+  } else if (is_symbol(x, temporal_vars)) {
+    out <-
+      tibble(
+        var = as_string(x),
+        lag = 0L,
+        call = exprs(.__daps_subset__.(!!x, .__daps_sim_row__.))
+      )
+  } else if (is_symbol(x, static_vars)) {
+    out <- tibble(var = as_string(x), lag = NA_integer_, call = list(x))
+  } else {
+    out <- tibble(var = character(), lag = integer(), call = list())
+  }
+  
+  out
+}
+
+
+validate_lag <- function(x, temporal_vars, env, rowwise_fn_env) {
+  
+  call <- call_standardise(x, rowwise_fn_env)
+  
+  if (!is_symbol(call$x, temporal_vars)) {
+    stop(
+      "\nThe x argument in calls to lag() must be the name of a single",
+      "\nvariable in the in the longitudinal data set and must not contain any",
+      "\nfunction calls. Offender:\n\n",
+      as_label(x)
+    )
+  }
+  
+  var <- as_string(call$x)
+  
+  n <- eval(call$n, env, NULL)
+  
+  if (is.null(n)) {
+    n <- 1L
+  } else if (!is_scalar_integerish(n) || n < 1L) {
+    stop(
+      "\nn must be a positive integer in calls to lag():\n\n",
+      as_label(x)
+    )
+  }
+  
+  default <- eval(call$default, env, NULL)
+  
+  if (is.null(default)) {
+    default <- NA
+  } else if (!is_scalar_atomic(default)) {
+    stop(
+      "\ndefault must be a single value:\n\n",
+      as_label(x)
+    )
+  }
+  
+  call <-
+    call_modify(
+      call,
+      x = expr(.__daps_subset__.(!!call$x, .__daps_sim_row__.)),
+      n = n,
+      default = default
+    )
+  
+  tibble(var = var, lag = n, call = list(call))
+}
+
+
+validate_slide <- function(x, temporal_vars, env, rowwise_fn_env) {
+  
+  call <- call_standardise(x, rowwise_fn_env)
+  
+  if (!is_symbol(call$.x, temporal_vars)) {
+    stop(
+      "\nThe .x argument in calls to the slide_*() functions must be the name",
+      "\nof a single variable in the in the longitudinal data set and must not",
+      "\ncontain any function calls. Offender:\n\n",
+      as_label(x)
+    )
+  }
+  
+  var <- as_string(call$.x)
+  
+  n <- eval(call$n, env, NULL)
+  
+  if (is.null(n)) {
+    n <- Inf
+  } else if (!(is_scalar_integerish(n) && n > 0L) &&
+             !all.equal(Inf, n, check.attributes = FALSE)) {
+    stop(
+      "\nn must be a positive integer or Inf in calls to ",
+      "special daps\n",
+      "\ntemporal functions (e.g., slide_mean, slide_median):\n\n",
+      as_label(x)
+    )
+  }
+  
+  call <-
+    call_modify(
+      call,
+      .x = expr(.__daps_subset__.(!!call$.x, .__daps_sim_row__.)),
+      n = n
+    )
+  
+  tibble(var = var, lag = NA, call = list(call))
+}
+
 
 
 

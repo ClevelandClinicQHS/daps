@@ -1,7 +1,7 @@
 Package: daps
 Title: Enables the Creation of Dynamically Adaptive
     Probabilistic Systems
-Version: 0.0.0.9000
+Version: 0.0.0.9001
 Authors@R: 
     person(given = "Nik",
            family = "Krieger",
@@ -11,15 +11,14 @@ Description: Enables the creation of dynamically adaptive
     probabilistic systems for modeling state transitions.
 License: MIT + file LICENSE
 Imports: 
-    dplyr (>= 0.8.0.1),
+    dplyr (>= 0.8.3),
     magrittr (>= 1.5),
-    pryr,
-    purrr (>= 0.3.2),
-    rlang (>= 0.3.4),
-    tibble,
-    tidyr (>= 1.0.0)
+    purrr (>= 0.3.3),
+    rlang (>= 0.4.3),
+    tibble (>= 2.1.3),
+    tidyr (>= 1.0.2)
 Suggests: 
-    testthat (>= 2.1.1),
+    testthat (>= 2.2.1),
     nnet,
     ordinal
 Encoding: UTF-8
